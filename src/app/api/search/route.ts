@@ -1,426 +1,366 @@
 import { NextResponse } from 'next/server';
 
-interface Article {
+// Interface unificada para artigos de pesquisa
+interface ResearchPaper {
   id: string;
-  title: string;
-  url: string;
   source: string;
-  snippet: string;
-  publicationDate: string | null;
-  dateFound: string;
+  title: string;
+  authors: string;
+  year: string;
+  abstract: string;
+  url: string;
+  isPortuguese?: boolean;
+  hasFullText?: boolean;
+  citationCount?: number;
+  isPreprint?: boolean;
 }
 
-// Reputable medical sources
-const REPUTABLE_SOURCES = [
-  'pmc.ncbi.nlm.nih.gov',
-  'pubmed.ncbi.nlm.nih.gov',
-  'aabb.org',
-  'who.int',
-  'ashpublications.org',
-  'sciencedirect.com',
-  'link.springer.com',
-  'jmir.org',
-  'researchgate.net',
-  'nejm.org',
-  'thelancet.com',
-  'bmj.com',
-  'jamanetwork.com',
-  'nature.com',
-  'frontiersin.org',
-  'plos.org',
-  'mdpi.com',
-  'biomedcentral.com'
+// Configuração de datas
+const CURRENT_YEAR = new Date().getFullYear();
+const MIN_YEAR = CURRENT_YEAR - 4; // 2021
+
+// Fake sites para excluir
+const FAKE_SITES = [
+  'actamedicaportuguesa.com',
+  'scielo.pt',
+  'revportcardiologia.pt',
+  'rpmgf.pt',
+  'spmi.pt',
+  'ordemdosmedicos.pt',
+  'apmc.pt',
 ];
 
-// Search queries for bloodless medicine
+// Termos de busca otimizados
 const SEARCH_QUERIES = [
-  'bloodless medicine surgery',
-  'patient blood management',
-  'transfusion alternatives',
-  'blood conservation surgery',
-  'anemia management without transfusion',
-  'cell salvage transfusion'
+  '"Patient Blood Management" AND surgery',
+  '"Bloodless surgery" techniques',
+  '"Anemia management" AND "without transfusion"',
+  '"Blood conservation" AND surgery',
+  '"Intraoperative cell salvage"',
+  '"Preoperative anemia" AND optimization',
 ];
 
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
+// Termos em português
+const PORTUGUESE_QUERIES = [
+  'medicina sem sangue',
+  'gestão de sangue do paciente',
+  'cirurgia sem transfusão',
+];
 
-function extractSourceName(url: string): string {
-  try {
-    const hostname = new URL(url).hostname.replace('www.', '');
-    return hostname;
-  } catch {
-    return 'Unknown';
+class MedicalResearchAgent {
+  private readonly SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search";
+  private readonly EUROPE_PMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
+  private readonly PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi";
+  private readonly PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi";
+  private readonly PUBMED_FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi";
+
+  private generateId(): string {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
-}
 
-function isReputableSource(url: string): boolean {
-  try {
-    const hostname = new URL(url).hostname.replace('www.', '');
-    return REPUTABLE_SOURCES.some(source => 
-      hostname === source || hostname.endsWith('.' + source)
-    );
-  } catch {
-    return false;
-  }
-}
-
-// PubMed E-utilities API (FREE, no API key required)
-async function searchPubMed(query: string): Promise<Article[]> {
-  try {
-    // Search PubMed for articles
-    const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=10&retmode=json&sort=relevance`;
-    
-    const searchResponse = await fetch(searchUrl);
-    if (!searchResponse.ok) return [];
-    
-    const searchData = await searchResponse.json();
-    const ids = searchData?.esearchresult?.idlist || [];
-    
-    if (ids.length === 0) return [];
-    
-    // Fetch article details
-    const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`;
-    
-    const fetchResponse = await fetch(fetchUrl);
-    if (!fetchResponse.ok) return [];
-    
-    const fetchText = await fetchResponse.text();
-    
-    // Parse XML response
-    const articles: Article[] = [];
-    const titleMatches = fetchText.matchAll(/<ArticleTitle>([^<]+)<\/ArticleTitle>/g);
-    const abstractMatches = fetchText.matchAll(/<AbstractText[^>]*>([^<]+)<\/AbstractText>/g);
-    const pmidMatches = fetchText.matchAll(/<PMID[^>]*>([^<]+)<\/PMID>/g);
-    
-    const pmids = [...pmidMatches].map(m => m[1]);
-    const titles = [...titleMatches].map(m => m[1]);
-    const abstracts = [...abstractMatches].map(m => m[1]);
-    
-    for (let i = 0; i < Math.min(pmids.length, titles.length); i++) {
-      const pmid = pmids[i];
-      const title = titles[i];
-      const abstract = abstracts[i] || '';
-      
-      articles.push({
-        id: generateId(),
-        title: title,
-        url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
-        source: 'pubmed.ncbi.nlm.nih.gov',
-        snippet: abstract.substring(0, 300) + (abstract.length > 300 ? '...' : ''),
-        publicationDate: null,
-        dateFound: new Date().toISOString()
-      });
+  private isFakeSite(url: string): boolean {
+    try {
+      const hostname = new URL(url).hostname.replace('www.', '');
+      return FAKE_SITES.some(site => hostname === site || hostname.endsWith('.' + site));
+    } catch {
+      return false;
     }
+  }
+
+  private detectPortuguese(title: string, abstract: string): boolean {
+    const keywords = ['medicina', 'sangue', 'transfusão', 'paciente', 'tratamento', 
+                      'hospital', 'cirurgia', 'anemia', 'portugal', 'saúde'];
+    const text = `${title} ${abstract}`.toLowerCase();
+    return keywords.some(k => text.includes(k));
+  }
+
+  private isValidYear(year: string | null): boolean {
+    if (!year) return true;
+    const y = parseInt(year);
+    return y >= MIN_YEAR && y <= CURRENT_YEAR;
+  }
+
+  /**
+   * Busca no Europe PMC (Excelente para Open Access)
+   * - JSON nativo
+   * - Texto completo disponível
+   * - Inclui PubMed + mais fontes
+   */
+  async fetchEuropePMC(query: string): Promise<ResearchPaper[]> {
+    try {
+      const params = new URLSearchParams({
+        query: `${query} AND PUB_YEAR:[${MIN_YEAR} TO ${CURRENT_YEAR}]`,
+        format: 'json',
+        pageSize: '5',
+        resultType: 'core',
+        sort: 'P_PDATE_D desc'
+      });
+
+      const response = await fetch(`${this.EUROPE_PMC_URL}?${params}`);
+      if (!response.ok) return [];
+
+      const data = await response.json();
+      const results = data?.resultList?.result || [];
+
+      return results
+        .filter((r: Record<string, unknown>) => this.isValidYear(r.pubYear as string))
+        .map((r: Record<string, unknown>) => ({
+          id: this.generateId(),
+          source: 'Europe PMC',
+          title: (r.title as string) || 'Untitled',
+          authors: (r.authorString as string) || 'Unknown authors',
+          year: (r.pubYear as string) || '',
+          abstract: (r.abstractText as string) || "Resumo não disponível.",
+          url: r.doi ? `https://doi.org/${r.doi}` : `https://europepmc.org/article/med/${r.pmid}`,
+          isPortuguese: this.detectPortuguese(r.title as string, r.abstractText as string),
+          hasFullText: r.isOpenAccess === 'Y' || !!r.pmcid
+        }));
+    } catch (error) {
+      console.error('Europe PMC error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Busca no Semantic Scholar (IA para relevância)
+   * - Ranking por citações
+   * - Resumos gerados por IA
+   * - Links para PDFs abertos
+   */
+  async fetchSemanticScholar(query: string): Promise<ResearchPaper[]> {
+    try {
+      const params = new URLSearchParams({
+        query: query,
+        limit: '5',
+        fields: 'title,authors,year,abstract,url,citationCount,openAccessPdf,publicationDate',
+        year: `${MIN_YEAR}-${CURRENT_YEAR}`
+      });
+
+      const response = await fetch(`${this.SEMANTIC_SCHOLAR_URL}?${params}`, {
+        headers: { 'User-Agent': 'MonitorMedicinaSemSangue/1.0' }
+      });
+      if (!response.ok) return [];
+
+      const data = await response.json();
+      const results = data?.data || [];
+
+      return results
+        .filter((r: Record<string, unknown>) => this.isValidYear(r.year?.toString() as string))
+        .map((r: Record<string, unknown>) => ({
+          id: this.generateId(),
+          source: 'Semantic Scholar',
+          title: (r.title as string) || 'Untitled',
+          authors: (r.authors as Array<{name: string}>)?.map((a) => a.name).join(', ') || 'Unknown authors',
+          year: r.year?.toString() || '',
+          abstract: (r.abstract as string) || "Resumo não disponível.",
+          url: (r.openAccessPdf as {url: string})?.url || (r.url as string) || `https://semanticscholar.org/paper/${r.paperId}`,
+          isPortuguese: this.detectPortuguese(r.title as string, r.abstract as string),
+          citationCount: (r.citationCount as number) || 0,
+          hasFullText: !!(r.openAccessPdf as {url: string})?.url
+        }));
+    } catch (error) {
+      console.error('Semantic Scholar error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Busca no PubMed (Padrão Ouro via E-Utilities)
+   * - 35+ milhões de citações
+   * - MeSH terms
+   * - Dois passos: Search -> Summary/Fetch
+   */
+  async fetchPubMed(query: string): Promise<ResearchPaper[]> {
+    try {
+      // Passo 1: Buscar IDs com filtro de data
+      const searchParams = new URLSearchParams({
+        db: 'pubmed',
+        term: `${query} AND (${MIN_YEAR}:${CURRENT_YEAR}[pdat])`,
+        retmode: 'json',
+        retmax: '5',
+        sort: 'relevance'
+      });
+
+      const searchResponse = await fetch(`${this.PUBMED_SEARCH_URL}?${searchParams}`, {
+        headers: { 'User-Agent': 'MonitorMedicinaSemSangue/1.0 (mailto:rui.cenoura@gmail.com)' }
+      });
+      if (!searchResponse.ok) return [];
+
+      const searchData = await searchResponse.json();
+      const ids = searchData?.esearchresult?.idlist || [];
+      
+      if (ids.length === 0) return [];
+
+      // Passo 2: Buscar Detalhes (esummary para dados básicos)
+      const summaryParams = new URLSearchParams({
+        db: 'pubmed',
+        id: ids.join(','),
+        retmode: 'json'
+      });
+
+      const summaryResponse = await fetch(`${this.PUBMED_SUMMARY_URL}?${summaryParams}`, {
+        headers: { 'User-Agent': 'MonitorMedicinaSemSangue/1.0' }
+      });
+      if (!summaryResponse.ok) return [];
+
+      const summaryData = await summaryResponse.json();
+      const results = summaryData?.result || {};
+      const uids = results?.uids || [];
+
+      // Passo 3: Buscar abstracts (efetch)
+      const fetchParams = new URLSearchParams({
+        db: 'pubmed',
+        id: ids.join(','),
+        retmode: 'xml'
+      });
+
+      const fetchResponse = await fetch(`${this.PUBMED_FETCH_URL}?${fetchParams}`, {
+        headers: { 'User-Agent': 'MonitorMedicinaSemSangue/1.0' }
+      });
+      const fetchText = fetchResponse.ok ? await fetchResponse.text() : '';
+
+      // Parse abstracts do XML
+      const abstractMap: Record<string, string> = {};
+      const articleBlocks = fetchText.split('<PubmedArticle>');
+      for (const block of articleBlocks) {
+        const pmidMatch = block.match(/<PMID[^>]*>([^<]+)<\/PMID>/);
+        const abstractMatch = block.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/);
+        if (pmidMatch && abstractMatch) {
+          abstractMap[pmidMatch[1]] = abstractMatch[1]
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 500);
+        }
+      }
+
+      return uids.map((uid: string) => {
+        const r = results[uid];
+        if (!r || typeof r !== 'object') return null;
+
+        const year = (r.pubdate as string)?.split(' ')[0] || '';
+        const abstract = abstractMap[uid] || "Resumo disponível no link.";
+
+        return {
+          id: this.generateId(),
+          source: 'PubMed',
+          title: (r.title as string) || 'Untitled',
+          authors: (r.authors as Array<{name: string}>)?.map((a) => a.name).join(', ') || 'Unknown authors',
+          year: year,
+          abstract: abstract,
+          url: `https://pubmed.ncbi.nlm.nih.gov/${uid}/`,
+          isPortuguese: this.detectPortuguese(r.title as string, abstract)
+        };
+      }).filter((p: ResearchPaper | null): p is ResearchPaper => p !== null && this.isValidYear(p.year));
+    } catch (error) {
+      console.error('PubMed error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Orquestrador: Busca em todas as fontes e consolida
+   */
+  async searchAll(query: string): Promise<ResearchPaper[]> {
+    console.log(`🔍 Pesquisando por: "${query}"...`);
     
-    return articles;
-  } catch (error) {
-    console.error(`Error searching PubMed for "${query}":`, error);
-    return [];
+    // Busca paralela em todas as fontes
+    const [epmc, semantic, pubmed] = await Promise.all([
+      this.fetchEuropePMC(query),
+      this.fetchSemanticScholar(query),
+      this.fetchPubMed(query)
+    ]);
+
+    const allResults = [...epmc, ...semantic, ...pubmed];
+
+    // Remover duplicados por URL
+    const seenUrls = new Set<string>();
+    const uniqueResults = allResults.filter(paper => {
+      if (seenUrls.has(paper.url) || this.isFakeSite(paper.url)) return false;
+      seenUrls.add(paper.url);
+      return true;
+    });
+
+    // Ordenar: Português primeiro, depois por citações, depois por ano
+    uniqueResults.sort((a, b) => {
+      if (a.isPortuguese && !b.isPortuguese) return -1;
+      if (!a.isPortuguese && b.isPortuguese) return 1;
+      if (a.citationCount && b.citationCount) return b.citationCount - a.citationCount;
+      return parseInt(b.year) - parseInt(a.year);
+    });
+
+    console.log(`✅ ${uniqueResults.length} artigos encontrados`);
+    return uniqueResults;
   }
 }
 
-// Europe PMC API (FREE, no API key required)
-async function searchEuropePMC(query: string): Promise<Article[]> {
-  try {
-    const url = `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(query)}&format=json&pageSize=10`;
-    
-    const response = await fetch(url);
-    if (!response.ok) return [];
-    
-    const data = await response.json();
-    const results = data?.resultList?.result || [];
-    
-    return results.map((item: any) => ({
-      id: generateId(),
-      title: item.title || 'Untitled',
-      url: `https://europepmc.org/article/med/${item.pmid || item.pmcid}`,
-      source: item.pmcid ? 'europepmc.org' : 'pubmed.ncbi.nlm.nih.gov',
-      snippet: item.abstractText?.substring(0, 300) || item.abstract?.substring(0, 300) || '',
-      publicationDate: item.pubYear || null,
-      dateFound: new Date().toISOString()
-    }));
-  } catch (error) {
-    console.error(`Error searching Europe PMC for "${query}":`, error);
-    return [];
-  }
-}
-
-// PLOS API (FREE, no API key required)
-async function searchPLOS(query: string): Promise<Article[]> {
-  try {
-    const url = `https://api.plos.org/search?q=${encodeURIComponent(query)}&rows=5&fl=id,title,abstract,journal,publication_date`;
-    
-    const response = await fetch(url);
-    if (!response.ok) return [];
-    
-    const data = await response.json();
-    const docs = data?.response?.docs || [];
-    
-    return docs.map((item: any) => ({
-      id: generateId(),
-      title: item.title || 'Untitled',
-      url: `https://journals.plos.org/plosmedicine/article?id=${item.id}`,
-      source: 'plos.org',
-      snippet: Array.isArray(item.abstract) ? item.abstract[0]?.substring(0, 300) : item.abstract?.substring(0, 300) || '',
-      publicationDate: item.publication_date || null,
-      dateFound: new Date().toISOString()
-    }));
-  } catch (error) {
-    console.error(`Error searching PLOS for "${query}":`, error);
-    return [];
-  }
-}
-
-// Curated articles from reputable medical sources
-const CURATED_ARTICLES: Article[] = [
-  {
-    id: generateId(),
-    title: 'Patient Blood Management Program Implementation - PMC',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC11296688',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'Current scientific evidence supports the effectiveness of PBM by reducing the need for blood transfusions, decreasing associated complications, and improving patient outcomes. The three pillars of PBM include preoperative, intraoperative, and postoperative strategies.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'WHO Guidance on Implementing Patient Blood Management',
-    url: 'https://www.who.int/publications/i/item/9789240104662',
-    source: 'who.int',
-    snippet: 'This guidance shows how the necessary structures and processes can be broadly replicated to improve overall population health through implementation of Patient Blood Management at national and institutional levels.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Cardiac Surgery and Blood-Saving Techniques: An Update - PMC',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC8844256',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'In cardiac surgery, blood conservation strategies include aggressive use of PAD, low CPB prime, effective RAP, cell salvage techniques, and pharmacological agents to minimize transfusion requirements.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Outcomes of Cardiac Surgery in Jehovah\'s Witness Patients: A Review',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC8446884',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'The use of a bloodless protocol for Jehovah\'s Witnesses does not appear to significantly impact clinical outcomes when compared to non-Witness patients, demonstrating that bloodless surgery can be safely performed.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Alternatives to Blood Transfusion - PMC',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC9666052',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'Strategies that enable patients to minimise or avoid blood transfusions in the management of surgical and medical anaemias include cell salvage, hemostatic agents, and comprehensive anemia management protocols.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Bloodless Heart Transplantation: An 11-Year Case Series',
-    url: 'https://pubmed.ncbi.nlm.nih.gov/40935286',
-    source: 'pubmed.ncbi.nlm.nih.gov',
-    snippet: 'Bloodless heart transplantation can be performed safely with outcomes comparable to national standards when comprehensive perioperative optimization and meticulous surgical technique are employed.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Management of Anemia in Patients Who Decline Blood Transfusion',
-    url: 'https://pubmed.ncbi.nlm.nih.gov/30033541',
-    source: 'pubmed.ncbi.nlm.nih.gov',
-    snippet: 'Under Bloodless Medicine programs, patients with extremely low hemoglobin levels have survived and recovered without receiving allogeneic transfusions through optimization of hematopoietic capacity.',
-    publicationDate: '2018',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'The Advantages of Bloodless Cardiac Surgery: A Systematic Review',
-    url: 'https://www.sciencedirect.com/science/article/pii/S0146280623004954',
-    source: 'sciencedirect.com',
-    snippet: 'Bloodless cardiac surgery is safe with early outcomes similar between JW and non-JW patients. Optimal patient blood management is essential for successful outcomes in bloodless surgery.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Strategies for Blood Conservation in Pediatric Cardiac Surgery',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC5070332',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'In children undergoing cardiac surgery, modified ultrafiltration (MUF) increases hematocrit, improves hemostasis, decreases blood loss and significantly reduces transfusion requirements.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Intraoperative Cell Salvage as an Alternative to Allogeneic Transfusion',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC7784599',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'Intraoperative cell salvage (ICS) provides high-quality autologous RBCs and can reduce requirements for allogeneic transfusions along with associated risks and costs.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Blood Conservation Techniques in Cardiac Surgery',
-    url: 'https://www.sciencedirect.com/science/article/abs/pii/S0003497510610077',
-    source: 'sciencedirect.com',
-    snippet: 'Techniques include preoperative blood donation, intraoperative withdrawal of blood, reinfusion of oxygenator blood, autotransfusion after heparin neutralization, and cell saver implementation.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Patient Blood Management - AABB',
-    url: 'https://www.aabb.org/blood-biotherapies/blood/transfusion-medicine/patient-blood-management',
-    source: 'aabb.org',
-    snippet: 'PBM techniques are designed to ensure optimal patient outcomes while maintaining blood supply availability for those who need it most, promoting appropriate transfusion practices.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'WHO Releases New Guidance on Patient Blood Management - AABB News',
-    url: 'https://www.aabb.org/news-resources/news/article/2025/03/19/who-releases-new-guidance-on-patient-blood-management',
-    source: 'aabb.org',
-    snippet: 'The World Health Organization released new guidance providing a framework to implement Patient Blood Management policies at national and institutional levels globally.',
-    publicationDate: '2025',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Developing a Protocol for Bloodless Kidney Transplantation',
-    url: 'https://ashpublications.org/blood/article/146/Supplement%201/6688/550385/Developing-a-protocol-for-bloodless-medicine',
-    source: 'ashpublications.org',
-    snippet: 'Treatment strategies for JW patients undergoing live-donor or deceased-donor kidney transplantation with bloodless protocols have shown successful outcomes.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Bloodless Medicine: Current Strategies and Emerging Treatment Paradigms',
-    url: 'https://www.researchgate.net/publication/305751203_Bloodless_medicine_Current_strategies_and_emerging_treatment_paradigms',
-    source: 'researchgate.net',
-    snippet: 'Methods applicable to both medical and surgical patients include minimizing laboratory testing, low-volume microtainers for phlebotomy, and comprehensive anemia management protocols.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Intraoperative Cell Salvage in Liver Transplantation',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC6354069',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'Intraoperative blood salvage autotransfusion is routinely used in liver transplant surgery with well-established indications and contraindications for safe implementation.',
-    publicationDate: '2019',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Clinical Utility of Autologous Salvaged Blood: A Review',
-    url: 'https://www.sciencedirect.com/science/article/abs/pii/S1091255X23013392',
-    source: 'sciencedirect.com',
-    snippet: 'Cell salvage can reduce requirements for allogeneic transfusions. Autologous salvaged RBCs provide high-quality blood with excellent post-transfusion survival rates.',
-    publicationDate: '2020',
-    dateFound: new Date().toISOString()
-  },
-  {
-    id: generateId(),
-    title: 'Simplified International Recommendations for PBM Implementation',
-    url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC5356305',
-    source: 'pmc.ncbi.nlm.nih.gov',
-    snippet: 'PBM-related metrics should include proportion of patients who are anemic and receive treatment, use of blood conservation techniques, and use of hemostatic agents.',
-    publicationDate: '2024',
-    dateFound: new Date().toISOString()
-  }
-];
-
+// API Route Handler
 export async function POST() {
   try {
-    const allArticles: Article[] = [];
+    const agent = new MedicalResearchAgent();
+    const allPapers: ResearchPaper[] = [];
+
+    // Buscar com termos em inglês (mais resultados)
+    for (const query of SEARCH_QUERIES.slice(0, 3)) {
+      const papers = await agent.searchAll(query);
+      allPapers.push(...papers);
+    }
+
+    // Buscar com termos em português
+    for (const query of PORTUGUESE_QUERIES.slice(0, 2)) {
+      const papers = await agent.searchAll(query);
+      allPapers.push(...papers);
+    }
+
+    // Remover duplicados finais
     const seenUrls = new Set<string>();
+    const uniquePapers = allPapers.filter(paper => {
+      if (seenUrls.has(paper.url)) return false;
+      seenUrls.add(paper.url);
+      return true;
+    });
 
-    // Search PubMed (FREE API)
-    try {
-      const pubmedArticles = await searchPubMed('bloodless medicine patient blood management');
-      for (const article of pubmedArticles) {
-        if (!seenUrls.has(article.url)) {
-          seenUrls.add(article.url);
-          allArticles.push(article);
-        }
-      }
-    } catch (e) {
-      console.error('PubMed search failed:', e);
-    }
+    // Ordenar novamente
+    uniquePapers.sort((a, b) => {
+      if (a.isPortuguese && !b.isPortuguese) return -1;
+      if (!a.isPortuguese && b.isPortuguese) return 1;
+      if (a.citationCount && b.citationCount) return b.citationCount - a.citationCount;
+      return parseInt(b.year || '0') - parseInt(a.year || '0');
+    });
 
-    // Search Europe PMC (FREE API)
-    try {
-      const europeArticles = await searchEuropePMC('bloodless surgery transfusion alternative');
-      for (const article of europeArticles) {
-        if (!seenUrls.has(article.url)) {
-          seenUrls.add(article.url);
-          allArticles.push(article);
-        }
-      }
-    } catch (e) {
-      console.error('Europe PMC search failed:', e);
-    }
+    // Limitar a 30 resultados
+    const finalPapers = uniquePapers.slice(0, 30);
 
-    // Search PLOS (FREE API)
-    try {
-      const plosArticles = await searchPLOS('bloodless medicine');
-      for (const article of plosArticles) {
-        if (!seenUrls.has(article.url)) {
-          seenUrls.add(article.url);
-          allArticles.push(article);
-        }
-      }
-    } catch (e) {
-      console.error('PLOS search failed:', e);
-    }
-
-    // Add curated articles that weren't found
-    for (const article of CURATED_ARTICLES) {
-      if (!seenUrls.has(article.url)) {
-        allArticles.push({
-          ...article,
-          id: generateId(),
-          dateFound: new Date().toISOString()
-        });
-      }
-    }
-
-    // Shuffle results
-    const shuffled = allArticles.sort(() => Math.random() - 0.5);
+    // Estatísticas
+    const portugueseCount = finalPapers.filter(p => p.isPortuguese).length;
+    const fullTextCount = finalPapers.filter(p => p.hasFullText).length;
 
     return NextResponse.json({
       success: true,
       data: {
-        articlesFound: shuffled.length,
-        weeklyArticles: shuffled,
-        message: `Pesquisa concluída! ${shuffled.length} artigos encontrados de fontes médicas confiáveis (PubMed, Europe PMC, PLOS).`
+        articlesFound: finalPapers.length,
+        portugueseArticles: portugueseCount,
+        fullTextArticles: fullTextCount,
+        weeklyArticles: finalPapers,
+        message: `Pesquisa concluída! ${finalPapers.length} artigos encontrados (${portugueseCount} em português, ${fullTextCount} com texto completo).`,
+        sources: {
+          'PubMed': 'Padrão ouro - 35+ milhões de citações médicas',
+          'Europe PMC': 'Open Access - Texto completo disponível',
+          'Semantic Scholar': 'IA para relevância e citações',
+        },
+        dateRange: `${MIN_YEAR}-${CURRENT_YEAR}`,
+        searchTerms: SEARCH_QUERIES.slice(0, 3)
       }
     });
   } catch (error) {
-    console.error('Error performing search:', error);
+    console.error('Search error:', error);
     
-    // Fallback to curated articles only
-    const articles = CURATED_ARTICLES.map(a => ({
-      ...a,
-      id: generateId(),
-      dateFound: new Date().toISOString()
-    }));
-
     return NextResponse.json({
-      success: true,
+      success: false,
+      error: 'Erro ao realizar pesquisa. Tente novamente.',
       data: {
-        articlesFound: articles.length,
-        weeklyArticles: articles,
-        message: `Pesquisa concluída! ${articles.length} artigos encontrados.`
+        articlesFound: 0,
+        weeklyArticles: []
       }
     });
   }
