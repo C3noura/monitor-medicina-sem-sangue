@@ -261,8 +261,10 @@ export default function Dashboard() {
 
   // Get last search info from localStorage
   const getLastSearchInfo = () => {
+    if (typeof window === 'undefined') return null
+
     try {
-      const stored = localStorage.getItem(STORAGE_KEYS.lastSearch)
+      const stored = window.localStorage.getItem(STORAGE_KEYS.lastSearch)
       if (stored) {
         return JSON.parse(stored)
       }
