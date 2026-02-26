@@ -2,14 +2,28 @@ import ZAI from 'z-ai-web-dev-sdk';
 import fs from 'fs';
 import path from 'path';
 
-const DATA_DIR = '/home/z/my-project/data';
+// Use /tmp for Vercel serverless environment
+const DATA_DIR = process.env.VERCEL ? '/tmp/data' : '/home/z/my-project/data';
 const LAST_SEARCH_FILE = path.join(DATA_DIR, 'last-search.json');
 const ARTICLES_FILE = path.join(DATA_DIR, 'articles.json');
 
+// In-memory cache for serverless environment
+let memoryCache: {
+  articles: Article[];
+  lastSearch: LastSearchData | null;
+} = {
+  articles: [],
+  lastSearch: null
+};
+
 // Ensure data directory exists
 function ensureDataDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+  } catch (error) {
+    console.error('Error creating data directory:', error);
   }
 }
 
@@ -76,10 +90,14 @@ function generateId(): string {
 
 // Check if URL is from a reputable source
 function isReputableSource(url: string): boolean {
-  const hostname = new URL(url).hostname.replace('www.', '');
-  return REPUTABLE_SOURCES.some(source => 
-    hostname === source || hostname.endsWith('.' + source)
-  );
+  try {
+    const hostname = new URL(url).hostname.replace('www.', '');
+    return REPUTABLE_SOURCES.some(source => 
+      hostname === source || hostname.endsWith('.' + source)
+    );
+  } catch {
+    return false;
+  }
 }
 
 // Extract domain name from URL
@@ -94,98 +112,121 @@ function extractSourceName(url: string): string {
 
 // Read last search data
 export function readLastSearchData(): LastSearchData {
+  // Return from memory cache if available
+  if (memoryCache.lastSearch) {
+    return memoryCache.lastSearch;
+  }
+  
   try {
     ensureDataDir();
-    if (!fs.existsSync(LAST_SEARCH_FILE)) {
-      return {
-        lastSearchTimestamp: null,
-        nextScheduledSearch: null,
-        articlesFound: 0,
-        sourcesSearched: []
-      };
+    if (fs.existsSync(LAST_SEARCH_FILE)) {
+      const data = fs.readFileSync(LAST_SEARCH_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      memoryCache.lastSearch = parsed;
+      return parsed;
     }
-    const data = fs.readFileSync(LAST_SEARCH_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return {
-      lastSearchTimestamp: null,
-      nextScheduledSearch: null,
-      articlesFound: 0,
-      sourcesSearched: []
-    };
+  } catch (error) {
+    console.error('Error reading last search data:', error);
   }
+  
+  return {
+    lastSearchTimestamp: null,
+    nextScheduledSearch: null,
+    articlesFound: 0,
+    sourcesSearched: []
+  };
 }
 
 // Write last search data
 export function writeLastSearchData(data: LastSearchData): void {
-  ensureDataDir();
-  fs.writeFileSync(LAST_SEARCH_FILE, JSON.stringify(data, null, 2));
+  memoryCache.lastSearch = data;
+  try {
+    ensureDataDir();
+    fs.writeFileSync(LAST_SEARCH_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('Error writing last search data:', error);
+  }
 }
 
 // Read articles data
 export function readArticlesData(): ArticlesData {
+  // Return from memory cache if available
+  if (memoryCache.articles.length > 0) {
+    return { articles: memoryCache.articles, lastUpdated: new Date().toISOString() };
+  }
+  
   try {
     ensureDataDir();
-    if (!fs.existsSync(ARTICLES_FILE)) {
-      return { articles: [], lastUpdated: null };
+    if (fs.existsSync(ARTICLES_FILE)) {
+      const data = fs.readFileSync(ARTICLES_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      memoryCache.articles = parsed.articles || [];
+      return parsed;
     }
-    const data = fs.readFileSync(ARTICLES_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return {
-      articles: [],
-      lastUpdated: null
-    };
+  } catch (error) {
+    console.error('Error reading articles data:', error);
   }
+  
+  return { articles: [], lastUpdated: null };
 }
 
 // Write articles data
 export function writeArticlesData(data: ArticlesData): void {
-  ensureDataDir();
-  fs.writeFileSync(ARTICLES_FILE, JSON.stringify(data, null, 2));
+  memoryCache.articles = data.articles;
+  try {
+    ensureDataDir();
+    fs.writeFileSync(ARTICLES_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('Error writing articles data:', error);
+  }
 }
 
 // Perform web search using z-ai-web-dev-sdk
 export async function performSearch(): Promise<Article[]> {
-  const zai = await ZAI.create();
-  const allArticles: Article[] = [];
-  const sourcesSet = new Set<string>();
+  try {
+    const zai = await ZAI.create();
+    const allArticles: Article[] = [];
+    const sourcesSet = new Set<string>();
 
-  for (const query of SEARCH_QUERIES) {
-    try {
-      const searchResult = await zai.functions.invoke('web_search', {
-        query,
-        num: 10
-      });
+    for (const query of SEARCH_QUERIES) {
+      try {
+        const searchResult = await zai.functions.invoke('web_search', {
+          query,
+          num: 10
+        });
 
-      if (Array.isArray(searchResult)) {
-        for (const item of searchResult) {
-          // Filter to only include reputable sources
-          if (isReputableSource(item.url)) {
-            const article: Article = {
-              id: generateId(),
-              title: item.name || 'Untitled',
-              url: item.url,
-              source: extractSourceName(item.url),
-              snippet: item.snippet || '',
-              publicationDate: item.date || null,
-              dateFound: new Date().toISOString()
-            };
-            
-            // Avoid duplicates
-            if (!allArticles.some(a => a.url === article.url)) {
-              allArticles.push(article);
-              sourcesSet.add(article.source);
+        if (Array.isArray(searchResult)) {
+          for (const item of searchResult) {
+            // Filter to only include reputable sources
+            if (isReputableSource(item.url)) {
+              const article: Article = {
+                id: generateId(),
+                title: item.name || 'Untitled',
+                url: item.url,
+                source: extractSourceName(item.url),
+                snippet: item.snippet || '',
+                publicationDate: item.date || null,
+                dateFound: new Date().toISOString()
+              };
+              
+              // Avoid duplicates
+              if (!allArticles.some(a => a.url === article.url)) {
+                allArticles.push(article);
+                sourcesSet.add(article.source);
+              }
             }
           }
         }
+      } catch (error) {
+        console.error(`Error searching for query "${query}":`, error);
       }
-    } catch (error) {
-      console.error(`Error searching for query "${query}":`, error);
     }
-  }
 
-  return allArticles;
+    return allArticles;
+  } catch (error) {
+    console.error('Error initializing ZAI:', error);
+    return [];
+  }
 }
 
 // Save search results
