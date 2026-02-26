@@ -2,8 +2,9 @@ import ZAI from 'z-ai-web-dev-sdk';
 import fs from 'fs';
 import path from 'path';
 
-// Use /tmp for Vercel serverless environment
-const DATA_DIR = process.env.VERCEL ? '/tmp/data' : '/home/z/my-project/data';
+// Resolve writable data directory by environment
+// Priority: DATA_DIR env override -> /tmp on Vercel -> local repo ./data
+const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/data' : path.join(process.cwd(), 'data'));
 const LAST_SEARCH_FILE = path.join(DATA_DIR, 'last-search.json');
 const ARTICLES_FILE = path.join(DATA_DIR, 'articles.json');
 
@@ -24,6 +25,26 @@ function ensureDataDir(): void {
     }
   } catch (error) {
     console.error('Error creating data directory:', error);
+  }
+}
+
+
+// Normalize URLs from search providers so links always open correctly
+function normalizeArticleUrl(rawUrl: string): string | null {
+  try {
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return null;
+
+    const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(withProtocol);
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return null;
+    }
+
+    return encodeURI(parsed.toString());
+  } catch {
+    return null;
   }
 }
 
@@ -197,13 +218,15 @@ export async function performSearch(): Promise<Article[]> {
 
         if (Array.isArray(searchResult)) {
           for (const item of searchResult) {
+            const normalizedUrl = normalizeArticleUrl(item.url || '');
+
             // Filter to only include reputable sources
-            if (isReputableSource(item.url)) {
+            if (normalizedUrl && isReputableSource(normalizedUrl)) {
               const article: Article = {
                 id: generateId(),
                 title: item.name || 'Untitled',
-                url: item.url,
-                source: extractSourceName(item.url),
+                url: normalizedUrl,
+                source: extractSourceName(normalizedUrl),
                 snippet: item.snippet || '',
                 publicationDate: item.date || null,
                 dateFound: new Date().toISOString()

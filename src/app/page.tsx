@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
+import PublicationsList from '@/components/publications-list'
 import { 
   Search, 
   Mail, 
@@ -261,8 +262,10 @@ export default function Dashboard() {
 
   // Get last search info from localStorage
   const getLastSearchInfo = () => {
+    if (typeof window === 'undefined') return null
+
     try {
-      const stored = localStorage.getItem(STORAGE_KEYS.lastSearch)
+      const stored = window.localStorage.getItem(STORAGE_KEYS.lastSearch)
       if (stored) {
         return JSON.parse(stored)
       }
@@ -615,6 +618,7 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+        <PublicationsList />
       </main>
 
       {/* Footer */}
