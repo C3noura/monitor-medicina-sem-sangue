@@ -358,7 +358,9 @@ export async function POST(request: Request) {
     sendSmtpEmail.to = [{ email: EMAIL_RECIPIENT, name: 'Rui Cenoura' }];
     
     const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
-    
+    const responseBody = (response as { body?: { messageId?: string } }).body;
+    const messageId = responseBody?.messageId ?? null;
+
     console.log(`✅ Automated email sent! ${articles.length} articles`);
     
     return NextResponse.json({
@@ -366,7 +368,7 @@ export async function POST(request: Request) {
       message: 'Email sent successfully',
       articlesCount: articles.length,
       recipient: EMAIL_RECIPIENT,
-      messageId: response.messageId,
+      messageId,
       timestamp: new Date().toISOString()
     });
     

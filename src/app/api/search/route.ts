@@ -94,7 +94,7 @@ async function searchPubMed(query: string): Promise<Article[]> {
     const abstractMatches = fetchText.matchAll(/<AbstractText[^>]*>([^<]+)<\/AbstractText>/g);
     const pmidMatches = fetchText.matchAll(/<PMID[^>]*>([^<]+)<\/PMID>/g);
     
-    const pmids = [...pmmidMatches].map(m => m[1]);
+    const pmids = [...pmidMatches].map(m => m[1]);
     const titles = [...titleMatches].map(m => m[1]);
     const abstracts = [...abstractMatches].map(m => m[1]);
     

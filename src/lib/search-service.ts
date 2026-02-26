@@ -2,8 +2,9 @@ import ZAI from 'z-ai-web-dev-sdk';
 import fs from 'fs';
 import path from 'path';
 
-// Use /tmp for Vercel serverless environment
-const DATA_DIR = process.env.VERCEL ? '/tmp/data' : '/home/z/my-project/data';
+// Resolve writable data directory by environment
+// Priority: DATA_DIR env override -> /tmp on Vercel -> local repo ./data
+const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/data' : path.join(process.cwd(), 'data'));
 const LAST_SEARCH_FILE = path.join(DATA_DIR, 'last-search.json');
 const ARTICLES_FILE = path.join(DATA_DIR, 'articles.json');
 

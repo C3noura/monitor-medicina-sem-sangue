@@ -71,7 +71,9 @@ O plano gratuito permite 300 emails/dia.
 
     // Send email
     const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
-    
+    const responseBody = (response as { body?: { messageId?: string } }).body;
+    const messageId = responseBody?.messageId ?? null;
+
     console.log('✅ Email enviado com sucesso via Brevo!', response);
     
     return NextResponse.json({
@@ -80,7 +82,7 @@ O plano gratuito permite 300 emails/dia.
         recipient: EMAIL_RECIPIENT,
         subject: 'Relatório - Monitor de Medicina Sem Sangue',
         articlesCount: articles.length,
-        messageId: response.messageId,
+        messageId,
         message: `✅ Email enviado com sucesso para ${EMAIL_RECIPIENT}! (${articles.length} artigos)`
       }
     });
