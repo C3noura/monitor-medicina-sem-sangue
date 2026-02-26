@@ -47,9 +47,13 @@ interface SystemStatus {
 }
 
 interface SearchResult {
-  articlesFound: number
-  weeklyArticles: Article[]
-  message: string
+  success: boolean
+  data?: {
+    articlesFound: number
+    weeklyArticles: Article[]
+    message: string
+  }
+  error?: string
 }
 
 interface EmailResult {
@@ -79,6 +83,12 @@ const MONITORED_SOURCES = [
   { name: 'ResearchGate', url: 'researchgate.net', icon: '🎓' },
 ]
 
+// Local storage keys
+const STORAGE_KEYS = {
+  articles: 'bloodless_medicine_articles',
+  lastSearch: 'bloodless_medicine_last_search'
+}
+
 export default function Dashboard() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [articles, setArticles] = useState<Article[]>([])
@@ -89,6 +99,33 @@ export default function Dashboard() {
   const [mailtoLink, setMailtoLink] = useState<string | null>(null)
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null)
 
+  // Load articles from localStorage
+  const loadFromStorage = useCallback(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.articles)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        return parsed as Article[]
+      }
+    } catch (error) {
+      console.error('Error loading from localStorage:', error)
+    }
+    return []
+  }, [])
+
+  // Save articles to localStorage
+  const saveToStorage = useCallback((newArticles: Article[]) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.articles, JSON.stringify(newArticles))
+      localStorage.setItem(STORAGE_KEYS.lastSearch, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        count: newArticles.length
+      }))
+    } catch (error) {
+      console.error('Error saving to localStorage:', error)
+    }
+  }, [])
+
   // Fetch system status
   const fetchStatus = useCallback(async () => {
     try {
@@ -96,9 +133,6 @@ export default function Dashboard() {
       const data = await response.json()
       if (data.success) {
         setStatus(data.data)
-        if (data.data.weeklyArticles) {
-          setArticles(data.data.weeklyArticles)
-        }
       }
     } catch (error) {
       console.error('Error fetching status:', error)
@@ -109,12 +143,18 @@ export default function Dashboard() {
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true)
+      
+      // Load from localStorage first
+      const storedArticles = loadFromStorage()
+      if (storedArticles.length > 0) {
+        setArticles(storedArticles)
+      }
+      
       await fetchStatus()
-      // Load existing articles from status (articles already stored)
       setIsLoading(false)
     }
     loadData()
-  }, [fetchStatus])
+  }, [fetchStatus, loadFromStorage])
 
   // Trigger manual search
   const handleSearch = async () => {
@@ -123,12 +163,32 @@ export default function Dashboard() {
     try {
       const response = await fetch('/api/search', { method: 'POST' })
       const data: SearchResult = await response.json()
-      if (data.weeklyArticles) {
-        setArticles(data.weeklyArticles)
+      
+      if (data.success && data.data) {
+        const foundArticles = data.data.weeklyArticles || []
+        
+        // Merge with existing articles, avoiding duplicates
+        const existingUrls = new Set(articles.map(a => a.url))
+        const newArticles = foundArticles.filter(a => !existingUrls.has(a.url))
+        const mergedArticles = [...newArticles, ...articles].slice(0, 100)
+        
+        setArticles(mergedArticles)
+        saveToStorage(mergedArticles)
+        
+        setNotification({ 
+          type: 'success', 
+          message: `${data.data.message} ${newArticles.length} novos artigos encontrados.` 
+        })
+      } else {
+        setNotification({ 
+          type: 'error', 
+          message: data.error || 'Erro ao realizar pesquisa' 
+        })
       }
+      
       await fetchStatus()
-      setNotification({ type: 'success', message: data.message || 'Pesquisa concluída com sucesso!' })
     } catch (error) {
+      console.error('Search error:', error)
       setNotification({ type: 'error', message: 'Erro ao realizar pesquisa. Tente novamente.' })
     } finally {
       setIsSearching(false)
@@ -141,7 +201,14 @@ export default function Dashboard() {
     setNotification(null)
     setMailtoLink(null)
     try {
-      const response = await fetch('/api/send-email', { method: 'POST' })
+      // Send articles in the request body
+      const response = await fetch('/api/send-email', { 
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ articles })
+      })
       const data: EmailResult = await response.json()
       
       if (data.success && data.data) {
@@ -157,6 +224,7 @@ export default function Dashboard() {
         })
       }
     } catch (error) {
+      console.error('Email error:', error)
       setNotification({ type: 'error', message: 'Erro ao enviar email. Tente novamente.' })
     } finally {
       setIsSendingEmail(false)
@@ -190,6 +258,21 @@ export default function Dashboard() {
     if (days > 0) return `Em ${days} dias e ${hours} horas`
     return `Em ${hours} horas`
   }
+
+  // Get last search info from localStorage
+  const getLastSearchInfo = () => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.lastSearch)
+      if (stored) {
+        return JSON.parse(stored)
+      }
+    } catch (error) {
+      console.error('Error reading last search:', error)
+    }
+    return null
+  }
+
+  const lastSearchInfo = getLastSearchInfo()
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-red-50">
@@ -246,7 +329,7 @@ export default function Dashboard() {
                 <Skeleton className="h-6 w-32" />
               ) : (
                 <p className="text-lg font-semibold text-slate-900">
-                  {formatDate(status?.lastSearch.lastSearchTimestamp || null)}
+                  {lastSearchInfo ? formatDate(lastSearchInfo.timestamp) : 'Nunca'}
                 </p>
               )}
             </CardContent>
@@ -276,7 +359,7 @@ export default function Dashboard() {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-slate-600 flex items-center gap-2">
                 <FileText className="w-4 h-4 text-green-500" />
-                Artigos Esta Semana
+                Artigos Encontrados
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -303,7 +386,7 @@ export default function Dashboard() {
                 <Skeleton className="h-6 w-16" />
               ) : (
                 <p className="text-3xl font-bold text-purple-600">
-                  {status?.lastSearch.sourcesSearched.length || MONITORED_SOURCES.length}
+                  {new Set(articles.map(a => a.source)).size || MONITORED_SOURCES.length}
                 </p>
               )}
             </CardContent>
@@ -359,7 +442,7 @@ export default function Dashboard() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Activity className="w-5 h-5 text-red-500" />
-                  Artigos Encontrados Esta Semana
+                  Artigos Encontrados ({articles.length})
                 </CardTitle>
                 <CardDescription>
                   Últimos artigos sobre medicina sem sangue de fontes médicas conceituadas

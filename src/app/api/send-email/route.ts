@@ -1,35 +1,38 @@
 import { NextResponse } from 'next/server';
-import { readArticlesData, readLastSearchData } from '@/lib/search-service';
 import { TransactionalEmailsApi, SendSmtpEmail } from '@getbrevo/brevo';
-import fs from 'fs';
-import path from 'path';
 
 const EMAIL_RECIPIENT = 'rui.cenoura@gmail.com';
-const DATA_DIR = '/home/z/my-project/data';
 
-// Brevo API key - plano gratuito: 300 emails/dia
-// Obtenha sua API key em: https://app.brevo.com/settings/keys/api
+// Brevo API key
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 
-export async function POST() {
+interface Article {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  snippet: string;
+  publicationDate: string | null;
+  dateFound: string;
+}
+
+export async function POST(request: Request) {
   try {
-    const articlesData = readArticlesData();
-    const lastSearchData = readLastSearchData();
+    // Get articles from request body
+    const body = await request.json();
+    const articles: Article[] = body.articles || [];
     
-    // Get articles from the last week
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const weeklyArticles = articlesData.articles.filter(a => 
-      new Date(a.dateFound) >= weekAgo
-    );
+    if (articles.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'Nenhum artigo encontrado para enviar'
+      });
+    }
     
     // Generate email content
-    const { html, text } = generateEmailContent(weeklyArticles, lastSearchData);
+    const { html, text } = generateEmailContent(articles);
     
-    // Save HTML report to file
-    const reportPath = path.join(DATA_DIR, 'weekly-report.html');
-    fs.writeFileSync(reportPath, html);
-    
-    // If no API key configured, return setup instructions with fallback options
+    // If no API key configured, return setup instructions
     if (!BREVO_API_KEY) {
       return NextResponse.json({
         success: false,
@@ -40,14 +43,13 @@ Para envio automático de emails:
 1. Acesse https://app.brevo.com (cadastro gratuito)
 2. Vá em Settings > SMTP & API > API Keys
 3. Crie uma nova API key
-4. Adicione ao arquivo .env.local:
+4. Adicione às variáveis de ambiente na Vercel:
    BREVO_API_KEY=sua_api_key_aqui
 
 O plano gratuito permite 300 emails/dia.
         `.trim(),
         htmlPreview: html,
-        textPreview: text,
-        mailtoLink: generateMailtoLink(weeklyArticles, text)
+        mailtoLink: generateMailtoLink(articles, text)
       });
     }
 
@@ -57,9 +59,8 @@ O plano gratuito permite 300 emails/dia.
 
     // Create email
     const sendSmtpEmail = new SendSmtpEmail();
-    sendSmtpEmail.subject = `Relatório Semanal - Monitor de Medicina Sem Sangue (${weeklyArticles.length} artigos)`;
+    sendSmtpEmail.subject = `Relatório - Monitor de Medicina Sem Sangue (${articles.length} artigos)`;
     sendSmtpEmail.htmlContent = html;
-    // Use the verified sender email from Brevo account
     sendSmtpEmail.sender = { 
       name: 'Monitor Medicina Sem Sangue', 
       email: 'rui.cenoura@gmail.com'
@@ -77,41 +78,30 @@ O plano gratuito permite 300 emails/dia.
       success: true,
       data: {
         recipient: EMAIL_RECIPIENT,
-        subject: 'Relatório Semanal - Monitor de Medicina Sem Sangue',
-        articlesCount: weeklyArticles.length,
+        subject: 'Relatório - Monitor de Medicina Sem Sangue',
+        articlesCount: articles.length,
         messageId: response.messageId,
-        message: `✅ Email enviado com sucesso para ${EMAIL_RECIPIENT}! (${weeklyArticles.length} artigos)`
+        message: `✅ Email enviado com sucesso para ${EMAIL_RECIPIENT}! (${articles.length} artigos)`
       }
     });
   } catch (error: any) {
     console.error('Error sending email:', error);
     
-    // Generate mailto fallback
-    const articlesData = readArticlesData();
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const weeklyArticles = articlesData.articles.filter(a => 
-      new Date(a.dateFound) >= weekAgo
-    );
-    const { html, text } = generateEmailContent(weeklyArticles, null);
-    
     return NextResponse.json({
       success: false,
-      error: `Erro ao enviar: ${error.message}`,
-      htmlPreview: html,
-      mailtoLink: generateMailtoLink(weeklyArticles, text)
+      error: `Erro ao enviar: ${error.message}`
     });
   }
 }
 
-function generateMailtoLink(articles: any[], text: string): string {
-  const subject = encodeURIComponent(`Relatório Semanal - Monitor de Medicina Sem Sangue (${articles.length} artigos)`);
+function generateMailtoLink(articles: Article[], text: string): string {
+  const subject = encodeURIComponent(`Relatório - Monitor de Medicina Sem Sangue (${articles.length} artigos)`);
   const body = encodeURIComponent(text);
   return `mailto:rui.cenoura@gmail.com?subject=${subject}&body=${body}`;
 }
 
-function generateEmailContent(articles: any[], lastSearchData: any): { html: string; text: string } {
+function generateEmailContent(articles: Article[]): { html: string; text: string } {
   const now = new Date();
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   
   const formatDate = (date: Date) => {
     return date.toLocaleDateString('pt-BR', {
@@ -121,13 +111,15 @@ function generateEmailContent(articles: any[], lastSearchData: any): { html: str
     });
   };
 
+  const sourcesCount = new Set(articles.map(a => a.source)).size;
+
   const html = `
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Relatório Semanal - Medicina Sem Sangue</title>
+  <title>Relatório - Medicina Sem Sangue</title>
   <style>
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f8fafc; }
     .header { background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); color: white; padding: 30px; border-radius: 12px; text-align: center; margin-bottom: 30px; }
@@ -143,17 +135,16 @@ function generateEmailContent(articles: any[], lastSearchData: any): { html: str
     .article-source { display: inline-block; background: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 4px; font-size: 12px; margin-bottom: 10px; }
     .article-snippet { color: #555; font-size: 14px; }
     .footer { text-align: center; padding: 30px; color: #666; font-size: 14px; border-top: 1px solid #e5e7eb; margin-top: 30px; }
-    .no-articles { text-align: center; padding: 40px; background: white; border-radius: 8px; color: #666; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>🏥 Monitor de Medicina Sem Sangue</h1>
-    <p>Relatório Semanal de Pesquisa</p>
+    <p>Relatório de Pesquisa</p>
   </div>
   
   <div class="date-range">
-    <strong>📅 Período:</strong> ${formatDate(weekAgo)} a ${formatDate(now)}
+    <strong>📅 Gerado em:</strong> ${formatDate(now)}
   </div>
   
   <div class="stats">
@@ -162,19 +153,14 @@ function generateEmailContent(articles: any[], lastSearchData: any): { html: str
       <div class="stat-label">Artigos Encontrados</div>
     </div>
     <div class="stat-card">
-      <div class="stat-number">${new Set(articles.map(a => a.source)).size}</div>
+      <div class="stat-number">${sourcesCount}</div>
       <div class="stat-label">Fontes Pesquisadas</div>
     </div>
   </div>
   
-  <h2 style="color: #333; margin-bottom: 20px;">📄 Artigos da Semana</h2>
+  <h2 style="color: #333; margin-bottom: 20px;">📄 Artigos Encontrados</h2>
   
-  ${articles.length === 0 ? `
-    <div class="no-articles">
-      <p>Nenhum artigo encontrado nesta semana.</p>
-      <p>Execute uma nova pesquisa para encontrar artigos.</p>
-    </div>
-  ` : articles.map(article => `
+  ${articles.map(article => `
     <div class="article">
       <a href="${article.url}" class="article-title" target="_blank">${article.title}</a>
       <span class="article-source">${article.source}</span>
@@ -185,7 +171,6 @@ function generateEmailContent(articles: any[], lastSearchData: any): { html: str
   
   <div class="footer">
     <p>Este relatório foi gerado automaticamente pelo Monitor de Medicina Sem Sangue.</p>
-    <p>Para mais informações, acesse o painel de controle.</p>
   </div>
 </body>
 </html>
@@ -193,21 +178,19 @@ function generateEmailContent(articles: any[], lastSearchData: any): { html: str
 
   const text = `
 MONITOR DE MEDICINA SEM SANGUE
-Relatório Semanal de Pesquisa
+Relatório de Pesquisa
 =====================================
 
-Período: ${formatDate(weekAgo)} a ${formatDate(now)}
+Gerado em: ${formatDate(now)}
 
 Estatísticas:
 - Artigos encontrados: ${articles.length}
-- Fontes pesquisadas: ${new Set(articles.map(a => a.source)).size}
+- Fontes pesquisadas: ${sourcesCount}
 
-ARTIGOS DA SEMANA:
+ARTIGOS:
 ------------------
 
-${articles.length === 0 
-  ? 'Nenhum artigo encontrado nesta semana.' 
-  : articles.map((a, i) => `
+${articles.map((a, i) => `
 ${i + 1}. ${a.title}
    Fonte: ${a.source}
    Link: ${a.url}
