@@ -10,10 +10,6 @@ interface Article {
   dateFound: string;
 }
 
-// Google Custom Search API configuration
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || '';
-const SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID || '';
-
 // Reputable medical sources
 const REPUTABLE_SOURCES = [
   'pmc.ncbi.nlm.nih.gov',
@@ -34,6 +30,17 @@ const REPUTABLE_SOURCES = [
   'plos.org',
   'mdpi.com',
   'biomedcentral.com'
+];
+
+// Search queries for bloodless medicine
+const SEARCH_QUERIES = [
+  'bloodless medicine surgery treatment 2024 2025',
+  'Patient Blood Management PBM guidelines',
+  'transfusion alternatives medical research',
+  'blood conservation surgery techniques',
+  'bloodless cardiac surgery outcomes',
+  'anemia management without transfusion',
+  'cell salvage autologous transfusion'
 ];
 
 function generateId(): string {
@@ -60,26 +67,112 @@ function isReputableSource(url: string): boolean {
   }
 }
 
-async function searchGoogle(query: string): Promise<any[]> {
-  if (!GOOGLE_API_KEY || !SEARCH_ENGINE_ID) {
-    return [];
-  }
-  
+// DuckDuckGo Instant Answer API (free, no API key required)
+async function searchDuckDuckGo(query: string): Promise<any[]> {
   try {
-    const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=10`;
-    const response = await fetch(url);
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query + ' medical research')}&format=json&no_html=1&skip_disambig=1`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'MonitorMedicinaSemSangue/1.0'
+      }
+    });
     
     if (!response.ok) {
-      console.error(`Google Search API error: ${response.status}`);
+      console.error(`DuckDuckGo API error: ${response.status}`);
       return [];
     }
     
     const data = await response.json();
-    return data.items || [];
+    const results: any[] = [];
+    
+    // Get related topics
+    if (data.RelatedTopics && Array.isArray(data.RelatedTopics)) {
+      for (const topic of data.RelatedTopics) {
+        if (topic.FirstURL && topic.Text) {
+          results.push({
+            link: topic.FirstURL,
+            title: topic.Text.split(' - ')[0] || topic.Text.substring(0, 100),
+            snippet: topic.Text
+          });
+        }
+      }
+    }
+    
+    // Get abstract if available
+    if (data.AbstractURL && data.AbstractText) {
+      results.push({
+        link: data.AbstractURL,
+        title: data.Heading || 'Abstract',
+        snippet: data.AbstractText
+      });
+    }
+    
+    // Get results from Infobox
+    if (data.Infobox && data.Infobox.content) {
+      for (const item of data.Infobox.content) {
+        if (item.url && item.label) {
+          results.push({
+            link: item.url,
+            title: item.label,
+            snippet: item.value || ''
+          });
+        }
+      }
+    }
+    
+    return results;
   } catch (error) {
-    console.error(`Error searching Google for "${query}":`, error);
+    console.error(`Error searching DuckDuckGo for "${query}":`, error);
     return [];
   }
+}
+
+// HTML scraping fallback for medical sources
+async function fetchFromMedicalSources(query: string): Promise<Article[]> {
+  const articles: Article[] = [];
+  
+  // Try to fetch from PubMed RSS or similar
+  const pubmedUrl = `https://pubmed.ncbi.nlm.nih.gov/rss/?term=${encodeURIComponent(query)}&limit=5`;
+  
+  try {
+    const response = await fetch(pubmedUrl, {
+      headers: {
+        'User-Agent': 'MonitorMedicinaSemSangue/1.0'
+      }
+    });
+    
+    if (response.ok) {
+      const text = await response.text();
+      // Parse RSS/XML for links
+      const linkMatches = text.match(/<link>([^<]+)<\/link>/g);
+      const titleMatches = text.match(/<title><!\[CDATA\[([^\]]+)\]\]><\/title>/g);
+      
+      if (linkMatches && titleMatches) {
+        for (let i = 0; i < Math.min(linkMatches.length, 5); i++) {
+          const url = linkMatches[i].replace(/<link>|<\/link>/g, '');
+          const title = titleMatches[i]?.replace(/<title><!\[CDATA\[|\]\]><\/title>/g, '') || 'Untitled';
+          
+          if (url && isReputableSource(url)) {
+            articles.push({
+              id: generateId(),
+              title: title,
+              url: url,
+              source: extractSourceName(url),
+              snippet: '',
+              publicationDate: null,
+              dateFound: new Date().toISOString()
+            });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching from PubMed:', error);
+  }
+  
+  return articles;
 }
 
 // Curated articles from reputable medical sources (real URLs and content)
@@ -250,22 +343,16 @@ const CURATED_ARTICLES: Article[] = [
 
 export async function POST() {
   try {
-    // Try Google Search API first if configured
-    if (GOOGLE_API_KEY && SEARCH_ENGINE_ID) {
-      const allArticles: Article[] = [];
-      const seenUrls = new Set<string>();
+    const allArticles: Article[] = [];
+    const seenUrls = new Set<string>();
 
-      const queries = [
-        'bloodless medicine surgery 2024 2025',
-        'Patient Blood Management guidelines',
-        'transfusion alternatives techniques'
-      ];
-
-      for (const query of queries) {
-        const results = await searchGoogle(query);
+    // Try DuckDuckGo search first
+    for (const query of SEARCH_QUERIES.slice(0, 3)) {
+      try {
+        const results = await searchDuckDuckGo(query);
         
         for (const item of results) {
-          if (isReputableSource(item.link) && !seenUrls.has(item.link)) {
+          if (item.link && isReputableSource(item.link) && !seenUrls.has(item.link)) {
             seenUrls.add(item.link);
             
             allArticles.push({
@@ -280,19 +367,33 @@ export async function POST() {
           }
         }
         
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (error) {
+        console.error(`Error with DuckDuckGo for "${query}":`, error);
+      }
+    }
+
+    // If we found articles from DuckDuckGo, return them
+    if (allArticles.length > 0) {
+      // Also add curated articles that weren't found
+      for (const article of CURATED_ARTICLES) {
+        if (!seenUrls.has(article.url)) {
+          allArticles.push({
+            ...article,
+            id: generateId(),
+            dateFound: new Date().toISOString()
+          });
+        }
       }
 
-      if (allArticles.length > 0) {
-        return NextResponse.json({
-          success: true,
-          data: {
-            articlesFound: allArticles.length,
-            weeklyArticles: allArticles,
-            message: `Pesquisa concluída! ${allArticles.length} artigos encontrados via Google API.`
-          }
-        });
-      }
+      return NextResponse.json({
+        success: true,
+        data: {
+          articlesFound: allArticles.length,
+          weeklyArticles: allArticles,
+          message: `Pesquisa concluída! ${allArticles.length} artigos encontrados de fontes médicas confiáveis.`
+        }
+      });
     }
 
     // Fallback to curated articles
